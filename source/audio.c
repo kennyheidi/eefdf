@@ -34,7 +34,11 @@
 #define DR_WAV_IMPLEMENTATION
 #include "dr_wav.h"
 
+// stb_vorbis is compiled as its own translation unit (source/stb_vorbis.c).
+// Include header-only here for declarations; definitions come from that TU.
+#define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
+#undef STB_VORBIS_HEADER_ONLY
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
