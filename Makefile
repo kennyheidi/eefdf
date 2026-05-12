@@ -50,7 +50,7 @@ LIBS     := -lcitro2d -lcitro3d -lctru -lm
 #---------------------------------------------------------------------------------
 # Source files
 #---------------------------------------------------------------------------------
-CFILES   := $(wildcard $(SOURCES)/*.c)
+CFILES   := $(filter-out $(SOURCES)/stb_vorbis.c, $(wildcard $(SOURCES)/*.c))
 OFILES   := $(patsubst $(SOURCES)/%.c, $(BUILD)/%.o, $(CFILES))
 
 OUTPUT   := $(CURDIR)/$(TARGET)
