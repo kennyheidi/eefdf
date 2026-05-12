@@ -34,7 +34,6 @@
 #define DR_WAV_IMPLEMENTATION
 #include "dr_wav.h"
 
-#define STB_VORBIS_NO_STDIO   0
 #include "stb_vorbis.c"
 
 /* ------------------------------------------------------------------ */
