@@ -42,11 +42,11 @@ jobs:
 
       - name: Download audio decoders
         run: |
-          mkdir -p source
-          curl -fsSL -o source/dr_mp3.h     https://raw.githubusercontent.com/mackron/dr_libs/master/dr_mp3.h
-          curl -fsSL -o source/dr_flac.h    https://raw.githubusercontent.com/mackron/dr_libs/master/dr_flac.h
-          curl -fsSL -o source/dr_wav.h     https://raw.githubusercontent.com/mackron/dr_libs/master/dr_wav.h
-          curl -fsSL -o source/stb_vorbis.c https://raw.githubusercontent.com/nothings/stb/master/stb_vorbis.c
+          mkdir -p source vendor
+          curl -fsSL -o source/dr_mp3.h  https://raw.githubusercontent.com/mackron/dr_libs/master/dr_mp3.h
+          curl -fsSL -o source/dr_flac.h https://raw.githubusercontent.com/mackron/dr_libs/master/dr_flac.h
+          curl -fsSL -o source/dr_wav.h  https://raw.githubusercontent.com/mackron/dr_libs/master/dr_wav.h
+          curl -fsSL -o vendor/stb_vorbis.c https://raw.githubusercontent.com/nothings/stb/master/stb_vorbis.c
 
       - name: Create icon and directories
         run: |
