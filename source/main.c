@@ -152,7 +152,7 @@ int main(void) {
                 BrowserEntry* entry = filebrowser_selected(&fb);
                 if (entry) {
                     if (entry->is_dir)  filebrowser_enter(&fb);
-                    else if (ndsp_ok)   audio_play(&audio, entry->full_path);
+                    else if (ndsp_ok) {     audio_open(&audio, entry->full_path);     audio_play(&audio); }
                 }
             }
 
