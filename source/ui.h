@@ -4,13 +4,17 @@
 #include "filebrowser.h"
 
 typedef struct {
+    // pointers to other systems
     AudioState*  audio;
     FileBrowser* fb;
 
-    // Waveform visualizer data
-    float        wave[200];
+    // shared text buffer for all text rendering
+    C2D_TextBuf  shared_buf;
 
-    // Cached colors
+    // waveform visualizer data (100 bars)
+    float        wave[100];
+
+    // cached colors
     u32          col_bg;
     u32          col_accent;
     u32          col_text;
@@ -18,6 +22,7 @@ typedef struct {
     u32          col_sel;
     u32          col_dir;
     u32          col_bar;
+
 } UIState;
 
 void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb);
