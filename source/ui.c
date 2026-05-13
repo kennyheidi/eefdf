@@ -74,11 +74,7 @@ static void draw_bar(float x, float y, float w, float h,
 /*  Init / fini                                                         */
 /* ------------------------------------------------------------------ */
 
-void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb, EasterEggState* easter_egg) {
-    memset(ui, 0, sizeof(*ui));
-    ui->audio = audio;
-    ui->fb    = fb;
-    ui->easter_egg = easter_egg;
+
 
     /* Allocate the shared text buffer ONCE — never freed until ui_fini() */
     ui->shared_buf = C2D_TextBufNew(TEXT_BUF_GLYPHS);
