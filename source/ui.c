@@ -74,10 +74,11 @@ static void draw_bar(float x, float y, float w, float h,
 /*  Init / fini                                                         */
 /* ------------------------------------------------------------------ */
 
-void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb) {
+void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb, EasterEggState* easter_egg) {
     memset(ui, 0, sizeof(*ui));
     ui->audio = audio;
     ui->fb    = fb;
+    ui->easter_egg = easter_egg;
 
     /* Allocate the shared text buffer ONCE — never freed until ui_fini() */
     ui->shared_buf = C2D_TextBufNew(TEXT_BUF_GLYPHS);
@@ -182,7 +183,7 @@ void ui_draw_top(UIState* ui, C3D_RenderTarget* target) {
     /* -- Controls reminder -- */
     draw_rect(0, 192, SCREEN_W_TOP, 1, ui->col_bar);
     draw_text(ui, "A=Play  B=Back  Sel=Pause  Sta=Stop  X=Reset", 6, 197, 0.40f, ui->col_dim);
-    draw_text(ui, "L/R=Pitch  Left/Right=Speed", 6, 213, 0.40f, ui->col_dim);
+    draw_text(ui, "L/R=Pitch  Left/Right=Speed  L+X=??", 6, 213, 0.40f, ui->col_dim);
 }
 
 /* ------------------------------------------------------------------ */
