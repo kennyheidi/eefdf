@@ -136,9 +136,8 @@ int main(void) {
         UIState     ui;
 
         audio_init(&audio);
-        audio.ndsp_available = ndsp_ok;
         filebrowser_init(&fb, "sdmc:/music");
-        ui_init(&ui, &audio, &fb);
+        ui_init(&ui, &audio, &fb, &easter_egg);
 
         while (aptMainLoop()) {
             hidScanInput();
@@ -158,7 +157,7 @@ int main(void) {
             }
 
             if (kDown & KEY_START)  audio_stop(&audio);
-            if (kDown & KEY_SELECT) audio_toggle_pause(&audio);
+            if (kDown & KEY_SELECT) {     if (audio_is_playing(&audio))         audio_pause(&audio);     else         audio_resume(&audio); }
             if (kDown & KEY_X)      audio_reset_fx(&audio);
 
             float speed_step = (kHeld & (KEY_L | KEY_R)) ? 0.1f : 0.05f;
