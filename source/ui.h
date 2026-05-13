@@ -21,5 +21,6 @@ typedef struct {
 } UIState;
 
 void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb);
+void ui_fini(UIState* ui);
 void ui_draw_top(UIState* ui, C3D_RenderTarget* target);
 void ui_draw_bottom(UIState* ui, C3D_RenderTarget* target);
