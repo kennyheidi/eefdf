@@ -28,8 +28,7 @@
 /*
  * Override the libctru default stack of 32 KB.
  * stb_vorbis decode functions (IMDCT) allocate ~32 KB of local float arrays
- * per stereo channel per frame.  326 KB of overflow was confirmed in the
- * crash dump before this fix was applied.
+ * per stereo channel per frame.
  */
 u32 __stacksize__ = 0x80000; /* 512 KB */
 
@@ -59,7 +58,7 @@ static void draw_ndsp_error(C3D_RenderTarget* top, C3D_RenderTarget* bottom,
     C2D_SceneBegin(top);
     C2D_TextBufClear(tbuf);
 
-    for (int i = 0; i < (int)(sizeof(lines) / sizeof(lines[0])); i++) {
+    for (int i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++) {
         if (!lines[i].str[0]) continue;
         C2D_Text t;
         C2D_TextParse(&t, tbuf, lines[i].str);
@@ -86,35 +85,29 @@ int main(void) {
 
     /*
      * DO NOT call consoleInit here.
-     *
-     * consoleInit writes a solid background colour into one GFX double-buffer
-     * slot.  C2D renders into the other slot.  The two alternate on every
-     * gfxSwapBuffers() call, producing the green-stripe corruption visible on
-     * the bottom screen.  All debug output now goes through C2D instead.
+     * All debug output now goes through C2D instead.
      */
 
     romfsInit();
     cfguInit();
 
-    /*
-     * Enable audio playback in sleep mode.
-     * When aptSetSleepAllowed(true), the DSP and audio will continue
-     * processing even when the lid is closed. The main thread will block
-     * on aptMainLoop() but NDSP remains active, allowing music to play.
-     */
+    /* Enable audio playback in sleep mode. */
     aptSetSleepAllowed(true);
 
-    /*
-     * Create render targets BEFORE the NDSP check so we can use C2D
-     * to draw the error screen without restructuring the code flow.
-     */
+    /* Create render targets for both screens. */
     C3D_RenderTarget* top    = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
     C3D_RenderTarget* bottom = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
-    Result ndsp_result = ndspInit();
-    bool   ndsp_ok     = R_SUCCEEDED(ndsp_result);
+    /* Main program objects */
+    AudioState  audio;
+    FileBrowser fb;
+    UIState     ui;
 
-    if (!ndsp_ok) {
+    /* Initialise audio (this will try ndspInit internally) */
+    audio_init(&audio);
+
+    /* If NDSP is not available, show error screen and optionally exit. */
+    if (!audio.ndsp_ok) {
         C2D_TextBuf tbuf = C2D_TextBufNew(512);
         bool do_exit = false;
 
@@ -122,13 +115,8 @@ int main(void) {
             hidScanInput();
             u32 kDown = hidKeysDown();
 
-            if (kDown & KEY_START) {
-                do_exit = true;
-                break;
-            }
-            if (kDown & KEY_A) {
-                break;
-            }
+            if (kDown & KEY_START) { do_exit = true; break; }
+            if (kDown & KEY_A) break;
 
             draw_ndsp_error(top, bottom, tbuf);
             gspWaitForVBlank();
@@ -138,82 +126,12 @@ int main(void) {
         if (do_exit) goto cleanup_early;
     }
 
-    {
-        AudioState  audio;
-        FileBrowser fb;
-        UIState     ui;
+    filebrowser_init(&fb, "sdmc:/music");
+    ui_init(&ui, &audio, &fb, NULL); /* Easter egg removed */
 
-        audio_init(&audio);
-        filebrowser_init(&fb, "sdmc:/music");
-        ui_init(&ui, &audio, &fb, NULL);  // Easter egg removed
+    while (aptMainLoop()) {
+        hidScanInput();
+        u32 kDown = hidKeysDown();
+        u32 kHeld = hidKeysHeld();
 
-        while (aptMainLoop()) {
-            hidScanInput();
-            u32 kDown = hidKeysDown();
-            u32 kHeld = hidKeysHeld();
-
-            if (kDown & KEY_DUP)   filebrowser_move(&fb, -1);
-            if (kDown & KEY_DDOWN) filebrowser_move(&fb,  1);
-            if (kDown & KEY_B)     filebrowser_go_up(&fb);
-
-            if (kDown & KEY_A) {
-                BrowserEntry* entry = filebrowser_selected(&fb);
-                if (entry) {
-                    if (entry->is_dir) {
-                        filebrowser_enter(&fb);
-                    } else if (ndsp_ok) {
-                        audio_open(&audio, entry->full_path);
-                        audio_play(&audio);
-                    }
-                }
-            }
-
-            if (kDown & KEY_START)  audio_stop(&audio);
-            if (kDown & KEY_SELECT) {
-                if (audio_is_playing(&audio))
-                    audio_pause(&audio);
-                else
-                    audio_resume(&audio);
-            }
-            if (kDown & KEY_X)      audio_reset_fx(&audio);
-
-            float speed_step = (kHeld & (KEY_L | KEY_R)) ? 0.1f : 0.05f;
-            if (kDown & KEY_DLEFT)  audio_adjust_speed(&audio, -speed_step);
-            if (kDown & KEY_DRIGHT) audio_adjust_speed(&audio,  speed_step);
-            if (kDown & KEY_L)      audio_adjust_pitch(&audio, -1.0f);
-            if (kDown & KEY_R)      audio_adjust_pitch(&audio,  1.0f);
-
-            if (ndsp_ok) audio_update(&audio);
-
-            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-            C2D_TargetClear(top,    C2D_Color32(0x12, 0x12, 0x1E, 0xFF));
-            C2D_SceneBegin(top);
-            ui_draw_top(&ui, top);
-            C2D_TargetClear(bottom, C2D_Color32(0x0E, 0x0E, 0x18, 0xFF));
-            C2D_SceneBegin(bottom);
-            ui_draw_bottom(&ui, bottom);
-            C3D_FrameEnd(0);
-        }
-
-        audio_exit(&audio);
-        ui_fini(&ui);
-        filebrowser_free(&fb);
-    }
-
-    C2D_Fini();
-    C3D_Fini();
-    if (ndsp_ok) ndspExit();
-    cfguExit();
-    romfsExit();
-    gfxExit();
-    return 0;
-
-cleanup_early:
-    C2D_Fini();
-    C3D_Fini();
-    if (ndsp_ok) ndspExit();
-    cfguExit();
-    romfsExit();
-    gfxExit();
-    return 0;
-}
+        /* File browser
