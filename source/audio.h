@@ -39,6 +39,7 @@ typedef struct {
     double       position;     // seconds
 
     // Internal decoder handle (cast to format-specific struct)
+    bool         ndsp_available;
     void*        decoder;
 
     // NDSP wave buffers (double-buffered)
