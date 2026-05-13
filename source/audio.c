@@ -1,366 +1,447 @@
-/*
- * audio.c  —  decoding + pitch/speed via simple resampling
- *
- * Pitch shift:  pitch_ratio = 2^(semitones/12)
- *               We resample decoded PCM at (rate * pitch_ratio) then play at
- *               the original rate, which shifts pitch without changing speed.
- *
- * Speed change: We play back the audio at (sample_rate * speed), which changes
- *               both the tempo and slightly the pitch.
- *
- * Combined:     First pitch-shift resample, then speed resample — gives
- *               independent pitch and speed control.
- *
- * Libraries used:
- *   dr_mp3.h  (single-header MP3 decoder)
- *   dr_flac.h (single-header FLAC decoder)
- *   stb_vorbis.h (single-header OGG decoder)
- *   dr_wav.h  (single-header WAV decoder)
- *
- * OLD 3DS OPTIMISATIONS applied here:
- *
- *   1. resample_stereo() now uses float instead of double throughout.
- *      The old 3DS ARM11 has a VFPv2 FPU with native single-precision
- *      hardware but emulates double in software — making every double
- *      multiply/divide 4–8× slower than its float equivalent.  The
- *      audio quality difference is inaudible at 44100 Hz.
- *
- *   2. audio_update() uses powf() instead of pow(), and float for
- *      pitch_ratio — same reason as above.
- *
- *   3. resample_stereo() inner loop replaces fmax/fmin (which accept
- *      double) with an explicit branch clamp, avoiding implicit
- *      double promotion.
- *
- *   4. Triple-buffering (3 buffers instead of 2) provides better stability.
- *      With 4-second buffers, if frame rate drops the DSP has more time
- *      to consume audio before running out of data.
- */
-
 #include "audio.h"
+
 #include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
 #include <math.h>
+#include <stdio.h>
 
-/* Single-header decoders — define implementation in exactly one .c file */
-#define DR_MP3_IMPLEMENTATION
+// your decoders
 #include "dr_mp3.h"
-
-#define DR_FLAC_IMPLEMENTATION
 #include "dr_flac.h"
-
-#define DR_WAV_IMPLEMENTATION
 #include "dr_wav.h"
-
-/* stb_vorbis: included directly here (audio.c is its one translation unit).
-   stb_vorbis.c is excluded from the Makefile wildcard to prevent double-compilation. */
 #include "stb_vorbis.c"
 
-/* ------------------------------------------------------------------ */
-/*  Internal helpers                                                    */
-/* ------------------------------------------------------------------ */
+// --- helpers: format detection ------------------------------------------------
 
-static AudioFormat detect_format(const char* path) {
-    const char* ext = strrchr(path, '.');
-    if (!ext) return FMT_UNKNOWN;
-    if (strcasecmp(ext, ".mp3")  == 0) return FMT_MP3;
-    if (strcasecmp(ext, ".ogg")  == 0) return FMT_OGG;
-    if (strcasecmp(ext, ".flac") == 0) return FMT_FLAC;
-    if (strcasecmp(ext, ".wav")  == 0) return FMT_WAV;
-    return FMT_UNKNOWN;
+static AudioFormat audio_detect_format(const char* path) {
+    const char* dot = strrchr(path, '.');
+    if (!dot) return AUDIO_FORMAT_NONE;
+    dot++;
+
+    if (!strcasecmp(dot, "mp3"))  return AUDIO_FORMAT_MP3;
+    if (!strcasecmp(dot, "flac")) return AUDIO_FORMAT_FLAC;
+    if (!strcasecmp(dot, "wav"))  return AUDIO_FORMAT_WAV;
+    if (!strcasecmp(dot, "ogg"))  return AUDIO_FORMAT_OGG;
+
+    return AUDIO_FORMAT_NONE;
 }
 
-static void extract_title(const char* path, char* title, int maxlen) {
-    const char* slash = strrchr(path, '/');
-    const char* src   = slash ? slash + 1 : path;
-    strncpy(title, src, maxlen - 1);
-    title[maxlen - 1] = '\0';
-    char* dot = strrchr(title, '.');
-    if (dot) *dot = '\0';
-}
+// --- helpers: decoder open/close ---------------------------------------------
 
-/*
- * resample_stereo — linear interpolation resample for interleaved stereo s16.
- *
- * OLD 3DS FIX: all arithmetic is now single-precision float.
- * The original used double throughout.  On ARM11 (VFPv2), double operations
- * are emulated in software and run 4-8× slower than equivalent float ops.
- * At 44100 Hz the quantisation error from float vs double is <0.001 LSB —
- * completely inaudible.
- */
-static int resample_stereo(const s16* src, int src_frames,
-                            s16* dst, int dst_max_frames,
-                            float ratio) {
-    int out = 0;
-    for (int i = 0; i < dst_max_frames; i++) {
-        float src_pos = (float)i / ratio;
-        int   idx0    = (int)src_pos;
-        int   idx1    = idx0 + 1;
-        float frac    = src_pos - (float)idx0;
-        if (idx1 >= src_frames) break;
-
-        for (int ch = 0; ch < 2; ch++) {
-            float s = src[idx0 * 2 + ch] * (1.0f - frac)
-                    + src[idx1 * 2 + ch] * frac;
-            /* Explicit clamp — avoids fmax/fmin which promote to double */
-            if      (s < -32768.0f) s = -32768.0f;
-            else if (s >  32767.0f) s =  32767.0f;
-            dst[out * 2 + ch] = (s16)s;
+static void* audio_open_decoder(AudioState* a, const char* path) {
+    switch (a->format) {
+    case AUDIO_FORMAT_MP3: {
+        drmp3* mp3 = (drmp3*)malloc(sizeof(drmp3));
+        if (!mp3) return NULL;
+        if (!drmp3_init_file(mp3, path, NULL)) {
+            free(mp3);
+            return NULL;
         }
-        out++;
+        a->duration_sec = (double)mp3->totalPCMFrameCount / (double)AUDIO_SAMPLE_RATE;
+        return mp3;
     }
-    return out;
+    case AUDIO_FORMAT_FLAC: {
+        drflac* flac = drflac_open_file(path, NULL);
+        if (!flac) return NULL;
+        a->duration_sec = (double)flac->totalPCMFrameCount / (double)AUDIO_SAMPLE_RATE;
+        return flac;
+    }
+    case AUDIO_FORMAT_WAV: {
+        drwav* wav = (drwav*)malloc(sizeof(drwav));
+        if (!wav) return NULL;
+        if (!drwav_init_file(wav, path, NULL)) {
+            free(wav);
+            return NULL;
+        }
+        a->duration_sec = (double)wav->totalPCMFrameCount / (double)AUDIO_SAMPLE_RATE;
+        return wav;
+    }
+    case AUDIO_FORMAT_OGG: {
+        int error = 0;
+        stb_vorbis* ogg = stb_vorbis_open_filename(path, &error, NULL);
+        if (!ogg) return NULL;
+        stb_vorbis_info info = stb_vorbis_get_info(ogg);
+        a->duration_sec = (double)stb_vorbis_stream_length_in_samples(ogg) / (double)info.sample_rate;
+        return ogg;
+    }
+    default:
+        return NULL;
+    }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Public API                                                          */
-/* ------------------------------------------------------------------ */
+static void audio_close_decoder(AudioState* a) {
+    if (!a->decoder) return;
+
+    switch (a->format) {
+    case AUDIO_FORMAT_MP3:
+        drmp3_uninit((drmp3*)a->decoder);
+        free(a->decoder);
+        break;
+    case AUDIO_FORMAT_FLAC:
+        drflac_close((drflac*)a->decoder);
+        break;
+    case AUDIO_FORMAT_WAV:
+        drwav_uninit((drwav*)a->decoder);
+        free(a->decoder);
+        break;
+    case AUDIO_FORMAT_OGG:
+        stb_vorbis_close((stb_vorbis*)a->decoder);
+        break;
+    default:
+        break;
+    }
+
+    a->decoder = NULL;
+}
+
+// --- helpers: cached parameters ----------------------------------------------
+
+static void audio_recalc_pitch(AudioState* a) {
+    a->pitch_ratio = powf(2.0f, a->pitch_semitones / 12.0f);
+}
+
+static void audio_recalc_speed(AudioState* a) {
+    a->playback_rate = (float)AUDIO_SAMPLE_RATE * a->speed;
+    if (a->ndsp_ok) {
+        ndspChnSetRate(AUDIO_CHANNEL, a->playback_rate);
+    }
+}
+
+static void audio_recalc_volume(AudioState* a) {
+    if (a->volume < 0.0f) a->volume = 0.0f;
+    if (a->volume > 1.0f) a->volume = 1.0f;
+    a->volume_q15 = (s32)(a->volume * 32767.0f);
+}
+
+// --- fixed‑point linear resampler (stereo) -----------------------------------
+// in:  interleaved stereo, in_frames frames
+// out: interleaved stereo, out_frames frames
+// returns number of output frames written
+
+static int audio_resample_linear_stereo_q16(
+    const s16* in, int in_frames,
+    s16* out, int out_frames,
+    s32 volume_q15)
+{
+    if (in_frames <= 0 || out_frames <= 0)
+        return 0;
+
+    // Q16.16 position
+    u32 pos = 0;
+    u32 step = 0;
+
+    if (out_frames > 1 && in_frames > 1) {
+        step = ((u32)(in_frames - 1) << 16) / (u32)(out_frames - 1);
+    }
+
+    for (int i = 0; i < out_frames; i++) {
+        int idx  = (int)(pos >> 16);
+        int frac = (int)(pos & 0xFFFF);
+
+        if (idx >= in_frames - 1)
+            idx = in_frames - 2;
+
+        const s16* s0 = &in[idx * 2];
+        const s16* s1 = &in[(idx + 1) * 2];
+
+        // linear interpolation per channel
+        s32 l = ((s32)s0[0] * (0x10000 - frac) + (s32)s1[0] * frac) >> 16;
+        s32 r = ((s32)s0[1] * (0x10000 - frac) + (s32)s1[1] * frac) >> 16;
+
+        // apply volume (Q0.15)
+        l = (l * volume_q15) >> 15;
+        r = (r * volume_q15) >> 15;
+
+        // clamp
+        if (l > 32767) l = 32767;
+        if (l < -32768) l = -32768;
+        if (r > 32767) r = 32767;
+        if (r < -32768) r = -32768;
+
+        out[i * 2 + 0] = (s16)l;
+        out[i * 2 + 1] = (s16)r;
+
+        pos += step;
+    }
+
+    return out_frames;
+}
+
+// --- public API --------------------------------------------------------------
 
 void audio_init(AudioState* a) {
     memset(a, 0, sizeof(*a));
-    a->status = AUDIO_STOPPED;
-    a->volume = 1.0f;
-    a->pitch  = 0.0f;
-    a->speed  = 1.0f;
 
-    /* Allocate PCM triple-buffers in linear memory (required by NDSP) */
-    for (int i = 0; i < 3; i++) {
-        a->pcm_buf[i] = (s16*)linearAlloc(BUFFER_SIZE * sizeof(s16));
-        memset(a->pcm_buf[i], 0, BUFFER_SIZE * sizeof(s16));
+    a->status          = AUDIO_STATUS_STOPPED;
+    a->format          = AUDIO_FORMAT_NONE;
+    a->pitch_semitones = 0.0f;
+    a->speed           = 1.0f;
+    a->volume          = 1.0f;
+    a->duration_sec    = 0.0;
+    a->position_sec    = 0.0;
+    a->decode_buf      = NULL;
+    a->decode_buf_frames = AUDIO_DECODE_FRAMES;
+
+    audio_recalc_pitch(a);
+    audio_recalc_speed(a);
+    audio_recalc_volume(a);
+
+    // allocate buffers
+    for (int i = 0; i < AUDIO_NUM_BUFFERS; i++) {
+        a->pcm_buf[i] = (s16*)linearAlloc(AUDIO_BUFFER_FRAMES * 2 * sizeof(s16));
+        memset(&a->wave_buf[i], 0, sizeof(ndspWaveBuf));
     }
-    a->process_buf_size = BUFFER_SIZE * 4;
-    a->process_buf      = (s16*)linearAlloc(a->process_buf_size * sizeof(s16));
 
-    /* Configure NDSP channel */
-    ndspChnReset(AUDIO_CHANNEL);
-    ndspChnSetInterp(AUDIO_CHANNEL, NDSP_INTERP_LINEAR);
-    ndspChnSetRate(AUDIO_CHANNEL, SAMPLE_RATE);
-    ndspChnSetFormat(AUDIO_CHANNEL, NDSP_FORMAT_STEREO_PCM16);
+    a->decode_buf = (s16*)linearAlloc(AUDIO_DECODE_FRAMES * 2 * sizeof(s16));
 
-    float mix[12] = { 1.0f, 1.0f };
-    ndspChnSetMix(AUDIO_CHANNEL, mix);
+    // init ndsp
+    if (ndspInit() == 0) {
+        a->ndsp_ok = true;
+
+        ndspChnReset(AUDIO_CHANNEL);
+        ndspChnSetInterp(AUDIO_CHANNEL, NDSP_INTERP_POLYPHASE);
+        ndspChnSetRate(AUDIO_CHANNEL, a->playback_rate);
+        ndspChnSetFormat(AUDIO_CHANNEL, NDSP_FORMAT_STEREO_PCM16);
+        ndspSetOutputMode(NDSP_OUTPUT_STEREO);
+    } else {
+        a->ndsp_ok = false;
+    }
+
+    a->active_buf = 0;
 }
 
-void audio_shutdown(AudioState* a) {
+void audio_exit(AudioState* a) {
     audio_stop(a);
-    for (int i = 0; i < 3; i++) {
-        if (a->pcm_buf[i]) { linearFree(a->pcm_buf[i]); a->pcm_buf[i] = NULL; }
+    audio_close(a);
+
+    if (a->decode_buf) {
+        linearFree(a->decode_buf);
+        a->decode_buf = NULL;
     }
-    if (a->process_buf) { linearFree(a->process_buf); a->process_buf = NULL; }
-}
 
-void audio_stop(AudioState* a) {
-    if (a->status == AUDIO_STOPPED) return;
-    ndspChnReset(AUDIO_CHANNEL);
-    a->status   = AUDIO_STOPPED;
-    a->position = 0;
-
-    if (a->decoder) {
-        switch (a->format) {
-            case FMT_MP3:  drmp3_uninit((drmp3*)a->decoder);          free(a->decoder); break;
-            case FMT_FLAC: drflac_close((drflac*)a->decoder);         break;
-            case FMT_WAV:  drwav_uninit((drwav*)a->decoder);          free(a->decoder); break;
-            case FMT_OGG:  stb_vorbis_close((stb_vorbis*)a->decoder); break;
-            default: break;
+    for (int i = 0; i < AUDIO_NUM_BUFFERS; i++) {
+        if (a->pcm_buf[i]) {
+            linearFree(a->pcm_buf[i]);
+            a->pcm_buf[i] = NULL;
         }
-        a->decoder = NULL;
+    }
+
+    if (a->ndsp_ok) {
+        ndspExit();
+        a->ndsp_ok = false;
     }
 }
 
-void audio_play(AudioState* a, const char* path) {
+bool audio_open(AudioState* a, const char* path) {
     audio_stop(a);
+    audio_close(a);
 
-    a->format = detect_format(path);
-    if (a->format == FMT_UNKNOWN) return;
+    a->format = audio_detect_format(path);
+    if (a->format == AUDIO_FORMAT_NONE)
+        return false;
 
     strncpy(a->current_file, path, sizeof(a->current_file) - 1);
-    extract_title(path, a->current_title, sizeof(a->current_title));
+    a->current_file[sizeof(a->current_file) - 1] = '\0';
 
-    bool ok = false;
-    switch (a->format) {
-        case FMT_MP3: {
-            drmp3* dec = calloc(1, sizeof(drmp3));
-            ok = drmp3_init_file(dec, path, NULL);
-            if (ok) {
-                a->decoder  = dec;
-                a->duration = (double)drmp3_get_pcm_frame_count(dec) / SAMPLE_RATE;
-            } else free(dec);
-            break;
-        }
-        case FMT_FLAC: {
-            drflac* dec = drflac_open_file(path, NULL);
-            ok = (dec != NULL);
-            if (ok) {
-                a->decoder  = dec;
-                a->duration = (double)dec->totalPCMFrameCount / dec->sampleRate;
-            }
-            break;
-        }
-        case FMT_WAV: {
-            drwav* dec = calloc(1, sizeof(drwav));
-            ok = drwav_init_file(dec, path, NULL);
-            if (ok) {
-                a->decoder  = dec;
-                a->duration = (double)dec->totalPCMFrameCount / dec->sampleRate;
-            } else free(dec);
-            break;
-        }
-        case FMT_OGG: {
-            int error = 0;
-            stb_vorbis* dec = stb_vorbis_open_filename(path, &error, NULL);
-            ok = (dec != NULL && error == 0);
-            if (ok) {
-                a->decoder  = dec;
-                a->duration = stb_vorbis_stream_length_in_seconds(dec);
-            }
-            break;
-        }
-        default: break;
+    a->decoder = audio_open_decoder(a, path);
+    if (!a->decoder) {
+        a->format = AUDIO_FORMAT_NONE;
+        return false;
     }
 
-    if (!ok) { a->status = AUDIO_STOPPED; return; }
+    a->position_sec = 0.0;
+    return true;
+}
 
-    ndspChnReset(AUDIO_CHANNEL);
-    ndspChnSetInterp(AUDIO_CHANNEL, NDSP_INTERP_LINEAR);
-    ndspChnSetRate(AUDIO_CHANNEL, (float)(SAMPLE_RATE * a->speed));
-    ndspChnSetFormat(AUDIO_CHANNEL, NDSP_FORMAT_STEREO_PCM16);
-    float mix[12] = { a->volume, a->volume };
-    ndspChnSetMix(AUDIO_CHANNEL, mix);
+void audio_close(AudioState* a) {
+    audio_close_decoder(a);
+    a->format = AUDIO_FORMAT_NONE;
+    a->current_file[0] = '\0';
+    a->current_title[0] = '\0';
+    a->duration_sec = 0.0;
+    a->position_sec = 0.0;
+}
 
-    a->status     = AUDIO_PLAYING;
-    a->active_buf = 0;
-    a->position   = 0;
+void audio_play(AudioState* a) {
+    if (!a->decoder || !a->ndsp_ok)
+        return;
 
-    for (int i = 0; i < 3; i++) {
+    // reset decoder to start
+    audio_close_decoder(a);
+    a->decoder = audio_open_decoder(a, a->current_file);
+    a->position_sec = 0.0;
+
+    // clear and queue initial buffers
+    for (int i = 0; i < AUDIO_NUM_BUFFERS; i++) {
+        memset(a->pcm_buf[i], 0, AUDIO_BUFFER_FRAMES * 2 * sizeof(s16));
         memset(&a->wave_buf[i], 0, sizeof(ndspWaveBuf));
+
         a->wave_buf[i].data_vaddr = a->pcm_buf[i];
+        a->wave_buf[i].nsamples   = AUDIO_BUFFER_FRAMES;
         a->wave_buf[i].status     = NDSP_WBUF_FREE;
     }
+
+    a->active_buf = 0;
+    a->status     = AUDIO_STATUS_PLAYING;
+
+    audio_recalc_pitch(a);
+    audio_recalc_speed(a);
+    audio_recalc_volume(a);
+
+    // fill as many buffers as possible immediately
     audio_update(a);
 }
 
-void audio_toggle_pause(AudioState* a) {
-    if (a->status == AUDIO_PLAYING) {
-        ndspChnSetPaused(AUDIO_CHANNEL, true);
-        a->status = AUDIO_PAUSED;
-    } else if (a->status == AUDIO_PAUSED) {
-        ndspChnSetPaused(AUDIO_CHANNEL, false);
-        a->status = AUDIO_PLAYING;
+void audio_stop(AudioState* a) {
+    if (!a->ndsp_ok)
+        return;
+
+    ndspChnReset(AUDIO_CHANNEL);
+    for (int i = 0; i < AUDIO_NUM_BUFFERS; i++) {
+        memset(&a->wave_buf[i], 0, sizeof(ndspWaveBuf));
+    }
+
+    a->status = AUDIO_STATUS_STOPPED;
+}
+
+void audio_pause(AudioState* a) {
+    if (a->status == AUDIO_STATUS_PLAYING) {
+        a->status = AUDIO_STATUS_PAUSED;
+        if (a->ndsp_ok)
+            ndspChnSetPaused(AUDIO_CHANNEL, true);
     }
 }
 
-/*
- * audio_update — decode one chunk, apply pitch+speed, submit to NDSP.
- * Called every frame from the main loop.
- *
- * OLD 3DS FIX: pitch_ratio is float and computed with powf() instead of
- * pow().  The ARM11 VFPv2 handles powf in hardware-assisted single-precision;
- * pow() forces the compiler to use the soft-double library path.
- */
-void audio_update(AudioState* a) {
-    if (a->status != AUDIO_PLAYING) return;
-    if (!a->decoder) return;
+void audio_resume(AudioState* a) {
+    if (a->status == AUDIO_STATUS_PAUSED) {
+        a->status = AUDIO_STATUS_PLAYING;
+        if (a->ndsp_ok)
+            ndspChnSetPaused(AUDIO_CHANNEL, false);
+    }
+}
 
-    ndspWaveBuf* wb = &a->wave_buf[a->active_buf];
-    if (wb->status != NDSP_WBUF_FREE && wb->status != NDSP_WBUF_DONE) return;
+// --- decoding one chunk ------------------------------------------------------
 
-    int frames_needed = BUFFER_SIZE / 2;
-
-    /* OLD 3DS FIX: float instead of double; powf() instead of pow() */
-    float pitch_ratio = powf(2.0f, a->pitch / 12.0f);
-    int decode_frames = (int)((float)frames_needed / pitch_ratio) + 4;
-    if (decode_frames * 2 > a->process_buf_size)
-        decode_frames = a->process_buf_size / 2;
-
-    s16* raw     = a->process_buf;
-    int  decoded = 0;
+static int audio_decode_frames(AudioState* a, int frames_to_decode, s16* dst) {
+    int decoded = 0;
 
     switch (a->format) {
-        case FMT_MP3:
-            decoded = (int)drmp3_read_pcm_frames_s16((drmp3*)a->decoder,
-                          decode_frames, raw);
-            break;
-        case FMT_FLAC:
-            decoded = (int)drflac_read_pcm_frames_s16((drflac*)a->decoder,
-                          decode_frames, raw);
-            break;
-        case FMT_WAV:
-            decoded = (int)drwav_read_pcm_frames_s16((drwav*)a->decoder,
-                          decode_frames, raw);
-            break;
-        case FMT_OGG:
-            decoded = stb_vorbis_get_samples_short_interleaved(
-                          (stb_vorbis*)a->decoder, 2, raw, decode_frames * 2);
-            break;
-        default: break;
+    case AUDIO_FORMAT_MP3:
+        decoded = (int)drmp3_read_pcm_frames_s16((drmp3*)a->decoder,
+                                                 frames_to_decode, dst);
+        break;
+    case AUDIO_FORMAT_FLAC:
+        decoded = (int)drflac_read_pcm_frames_s16((drflac*)a->decoder,
+                                                  frames_to_decode, dst);
+        break;
+    case AUDIO_FORMAT_WAV:
+        decoded = (int)drwav_read_pcm_frames_s16((drwav*)a->decoder,
+                                                 frames_to_decode, dst);
+        break;
+    case AUDIO_FORMAT_OGG:
+        decoded = stb_vorbis_get_samples_short_interleaved(
+            (stb_vorbis*)a->decoder, 2, dst, frames_to_decode * 2);
+        break;
+    default:
+        decoded = 0;
+        break;
     }
 
-    if (decoded <= 0) {
-        a->status   = AUDIO_STOPPED;
-        a->position = a->duration;
-        return;
-    }
-
-    s16* dst       = a->pcm_buf[a->active_buf];
-    int  out_frames = resample_stereo(raw, decoded, dst, frames_needed, pitch_ratio);
-
-    a->position += (double)decoded / SAMPLE_RATE;
-
-    ndspChnSetRate(AUDIO_CHANNEL, (float)(SAMPLE_RATE * a->speed));
-
-    wb->data_vaddr = dst;
-    wb->nsamples   = out_frames * 2;
-    wb->status     = NDSP_WBUF_FREE;
-    DSP_FlushDataCache(dst, out_frames * 2 * sizeof(s16));
-    ndspChnWaveBufAdd(AUDIO_CHANNEL, wb);
-
-    /* Cycle through 3 buffers instead of 2 */
-    a->active_buf = (a->active_buf + 1) % 3;
+    return decoded;
 }
 
+// --- main update loop --------------------------------------------------------
+// Call once per frame from your main loop.
+
+void audio_update(AudioState* a) {
+    if (a->status != AUDIO_STATUS_PLAYING)
+        return;
+    if (!a->decoder || !a->ndsp_ok)
+        return;
+
+    // Try to keep all buffers queued.
+    for (int n = 0; n < AUDIO_NUM_BUFFERS; n++) {
+        ndspWaveBuf* wb = &a->wave_buf[a->active_buf];
+
+        if (wb->status != NDSP_WBUF_FREE && wb->status != NDSP_WBUF_DONE)
+            break; // this buffer is still in use
+
+        // how many frames we want in this NDSP buffer
+        const int out_frames = AUDIO_BUFFER_FRAMES;
+
+        // how many frames to decode to account for pitch
+        float pitch_ratio = a->pitch_ratio;
+        if (pitch_ratio < 0.25f) pitch_ratio = 0.25f;
+        if (pitch_ratio > 4.0f)  pitch_ratio = 4.0f;
+
+        int decode_frames = (int)((float)out_frames / pitch_ratio) + 4;
+        if (decode_frames > a->decode_buf_frames)
+            decode_frames = a->decode_buf_frames;
+
+        int got = audio_decode_frames(a, decode_frames, a->decode_buf);
+        if (got <= 0) {
+            // end of stream
+            a->status       = AUDIO_STATUS_STOPPED;
+            a->position_sec = a->duration_sec;
+            return;
+        }
+
+        // resample into the NDSP buffer
+        s16* out = a->pcm_buf[a->active_buf];
+        int  written = audio_resample_linear_stereo_q16(
+            a->decode_buf, got, out, out_frames, a->volume_q15);
+
+        // update playback position based on decoded frames
+        a->position_sec += (double)got / (double)AUDIO_SAMPLE_RATE;
+        if (a->position_sec > a->duration_sec)
+            a->position_sec = a->duration_sec;
+
+        wb->data_vaddr = out;
+        wb->nsamples   = written; // frames per channel
+        wb->status     = NDSP_WBUF_FREE;
+
+        DSP_FlushDataCache(out, written * 2 * sizeof(s16));
+        ndspChnWaveBufAdd(AUDIO_CHANNEL, wb);
+
+        a->active_buf = (a->active_buf + 1) % AUDIO_NUM_BUFFERS;
+    }
+}
+
+// --- controls / queries ------------------------------------------------------
+
 void audio_adjust_pitch(AudioState* a, float semitones) {
-    a->pitch += semitones;
-    if (a->pitch < PITCH_MIN) a->pitch = PITCH_MIN;
-    if (a->pitch > PITCH_MAX) a->pitch = PITCH_MAX;
+    a->pitch_semitones += semitones;
+    if (a->pitch_semitones < -12.0f) a->pitch_semitones = -12.0f;
+    if (a->pitch_semitones >  12.0f) a->pitch_semitones =  12.0f;
+    audio_recalc_pitch(a);
 }
 
 void audio_adjust_speed(AudioState* a, float delta) {
     a->speed += delta;
-    if (a->speed < SPEED_MIN) a->speed = SPEED_MIN;
-    if (a->speed > SPEED_MAX) a->speed = SPEED_MAX;
-    if (a->status == AUDIO_PLAYING)
-        ndspChnSetRate(AUDIO_CHANNEL, (float)(SAMPLE_RATE * a->speed));
+    if (a->speed < 0.25f) a->speed = 0.25f;
+    if (a->speed > 4.0f)  a->speed = 4.0f;
+    audio_recalc_speed(a);
 }
 
 void audio_reset_fx(AudioState* a) {
-    a->pitch = 0.0f;
-    a->speed = 1.0f;
-    if (a->status == AUDIO_PLAYING)
-        ndspChnSetRate(AUDIO_CHANNEL, SAMPLE_RATE);
+    a->pitch_semitones = 0.0f;
+    a->speed           = 1.0f;
+    audio_recalc_pitch(a);
+    audio_recalc_speed(a);
 }
 
-void audio_set_volume(AudioState* a, float vol) {
-    a->volume = vol;
-    float mix[12] = { vol, vol };
-    ndspChnSetMix(AUDIO_CHANNEL, mix);
+void audio_set_volume(AudioState* a, float volume) {
+    a->volume = volume;
+    audio_recalc_volume(a);
 }
 
-float audio_progress(const AudioState* a) {
-    if (a->duration <= 0) return 0.0f;
-    float p = (float)(a->position / a->duration);
-    return p < 0.0f ? 0.0f : (p > 1.0f ? 1.0f : p);
+bool audio_is_playing(const AudioState* a) {
+    return a->status == AUDIO_STATUS_PLAYING;
 }
 
-void audio_get_waveform(const AudioState* a, float* buf, int n) {
-    if (a->status == AUDIO_STOPPED || !a->pcm_buf[a->active_buf ^ 1]) {
-        memset(buf, 0, n * sizeof(float));
-        return;
-    }
-    s16* src   = a->pcm_buf[a->active_buf ^ 1];
-    int  total = BUFFER_SIZE / 2;
-    for (int i = 0; i < n; i++) {
-        int idx = (int)((float)i / n * total) * 2;
-        buf[i]  = src[idx] / 32768.0f;
-    }
+double audio_get_position(const AudioState* a) {
+    return a->position_sec;
+}
+
+double audio_get_duration(const AudioState* a) {
+    return a->duration_sec;
 }
