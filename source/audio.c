@@ -36,7 +36,7 @@
 
 // stb_vorbis: included directly here (audio.c is its one translation unit).
 // stb_vorbis.c is excluded from the Makefile wildcard to prevent double-compilation.
-#include "stb_vorbis.c"
+#include "../vendor/stb_vorbis.c"
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                    */
