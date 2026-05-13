@@ -51,7 +51,7 @@ int main(void) {
     }
 
     // Step 5: citro3d
-    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE)) {
+    if (!C3D_Init(0x10000)) {
         fatal("C3D_Init failed.", 0);
         cfguExit();
         romfsExit();
@@ -60,7 +60,7 @@ int main(void) {
     }
 
     // Step 6: citro2d
-    if (!C2D_Init(C2D_DEFAULT_MAX_OBJECTS)) {
+    if (!C2D_Init(512)) {
         fatal("C2D_Init failed.", 0);
         C3D_Fini();
         cfguExit();
