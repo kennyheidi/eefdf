@@ -1,6 +1,19 @@
 /*
  * 3DS Audio Player with Pitch & Speed Control
  * Supports: MP3, OGG, FLAC, WAV
+ *
+ * Controls:
+ *   D-Pad Up/Down    - Navigate file browser
+ *   A                - Play selected file / Enter folder
+ *   B                - Go up a folder
+ *   L                - Pitch down 1 semitone
+ *   R                - Pitch up 1 semitone
+ *   D-Pad Left       - Speed down
+ *   D-Pad Right      - Speed up
+ *   Select           - Pause / Resume
+ *   Start            - Stop playback
+ *   X                - Reset pitch + speed
+ *   Y                - Cycle language (EN / JA)
  */
 
 #include <3ds.h>
@@ -72,6 +85,7 @@ int main(void) {
             u32 kDown = hidKeysDown();
             u32 kHeld = hidKeysHeld();
 
+            // File browser
             if (kDown & KEY_DUP)   filebrowser_move(&fb, -1);
             if (kDown & KEY_DDOWN) filebrowser_move(&fb,  1);
             if (kDown & KEY_B)     filebrowser_go_up(&fb);
@@ -84,15 +98,20 @@ int main(void) {
                 }
             }
 
+            // Playback
             if (kDown & KEY_START)  audio_stop(&audio);
             if (kDown & KEY_SELECT) audio_toggle_pause(&audio);
             if (kDown & KEY_X)      audio_reset_fx(&audio);
 
+            // Pitch & speed
             float speed_step = (kHeld & (KEY_L | KEY_R)) ? 0.1f : 0.05f;
             if (kDown & KEY_DLEFT)  audio_adjust_speed(&audio, -speed_step);
             if (kDown & KEY_DRIGHT) audio_adjust_speed(&audio,  speed_step);
             if (kDown & KEY_L)      audio_adjust_pitch(&audio, -1.0f);
             if (kDown & KEY_R)      audio_adjust_pitch(&audio,  1.0f);
+
+            // Language toggle
+            if (kDown & KEY_Y)      ui_cycle_language(&ui);
 
             if (ndsp_ok) audio_update(&audio);
 
@@ -114,7 +133,7 @@ int main(void) {
 
     if (ndsp_ok) ndspExit();
     cfguExit();
-    romfsInit();
+    romfsExit();
     gfxExit();
     return 0;
 
