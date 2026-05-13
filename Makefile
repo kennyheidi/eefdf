@@ -40,7 +40,7 @@ LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 # Compiler flags
 #---------------------------------------------------------------------------------
 ARCH     := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
-CFLAGS   := -g -Wall -O2 -ffast-math -mword-relocations -ffunction-sections \
+CFLAGS   := -g -Wall -O2 -mword-relocations -ffunction-sections \
             $(ARCH) $(INCLUDE) -D__3DS__
 CXXFLAGS := $(CFLAGS) -std=c++17
 ASFLAGS  := -g $(ARCH)
