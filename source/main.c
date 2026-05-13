@@ -15,6 +15,13 @@
 #include "filebrowser.h"
 #include "ui.h"
 
+/*
+ * stb_vorbis IMDCT decode functions allocate large local float arrays
+ * (~32KB per channel per frame). The default .3dsx stack of 32KB is not
+ * nearly enough. This overrides the libctru weak symbol to give 512KB.
+ */
+u32 __stacksize__ = 0x80000;
+
 int main(void) {
     gfxInitDefault();
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
