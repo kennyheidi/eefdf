@@ -3,9 +3,17 @@
 #include "audio.h"
 #include "filebrowser.h"
 
+typedef enum {
+    LANG_EN = 0,  // English
+    LANG_JA = 1,  // Japanese (Romaji)
+    LANG_COUNT
+} Language;
+
 typedef struct {
     AudioState*  audio;
     FileBrowser* fb;
+
+    Language     lang;
 
     // Waveform visualizer data
     float        wave[200];
@@ -21,5 +29,6 @@ typedef struct {
 } UIState;
 
 void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb);
+void ui_cycle_language(UIState* ui);
 void ui_draw_top(UIState* ui, C3D_RenderTarget* target);
 void ui_draw_bottom(UIState* ui, C3D_RenderTarget* target);
