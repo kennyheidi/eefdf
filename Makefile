@@ -24,16 +24,6 @@ CTRULIB      := $(DEVKITPRO)/libctru
 
 include $(DEVKITARM)/3ds_rules
 
-#---------------------------------------------------------------------------------
-# Memory layout — SYSTEM mode gives O3DS apps the full 64MB
-# Without this, the default heap is tiny and C3D/C2D blow the stack
-#---------------------------------------------------------------------------------
-APP_MEMTYPE  := 0   # 0 = APPLICATION (standard, ~48MB usable on O3DS)
-
-#---------------------------------------------------------------------------------
-# Linker flags — explicit stack size to avoid overflow on O3DS
-# Default stack is 32KB; we set 64KB to be safe
-#---------------------------------------------------------------------------------
 ARCH     := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
 INCLUDE  := -I$(SOURCES) \
@@ -43,12 +33,13 @@ INCLUDE  := -I$(SOURCES) \
 LIBDIRS  := $(CTRULIB) $(DEVKITPRO)/portlibs/3ds
 LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
+# Use -D__3DS__ (modern libctru requirement)
 CFLAGS   := -g -Wall -O2 -mword-relocations -ffunction-sections \
-            $(ARCH) $(INCLUDE) -DARM11 -D_3DS
+            $(ARCH) $(INCLUDE) -D__3DS__
 CXXFLAGS := $(CFLAGS) -std=c++17
 ASFLAGS  := -g $(ARCH)
 
-# -Wl,--stack sets the stack size. 0x10000 = 64KB, safe for O3DS.
+# 64KB stack prevents overflow on Old 3DS
 LDFLAGS  := -specs=3dsx.specs -g $(ARCH) \
             -Wl,-Map,$(notdir $*.map) \
             -Wl,--stack,0x10000
@@ -57,6 +48,8 @@ LIBS     := -lcitro2d -lcitro3d -lctru -lm
 
 #---------------------------------------------------------------------------------
 # Source files
+# stb_vorbis.c lives in vendor/ but is #included by audio.c directly,
+# so it must NOT appear as a standalone compilation unit here.
 #---------------------------------------------------------------------------------
 CFILES   := $(wildcard $(SOURCES)/*.c)
 OFILES   := $(patsubst $(SOURCES)/%.c, $(BUILD)/%.o, $(CFILES))
@@ -70,7 +63,7 @@ $(BUILD):
 	mkdir -p $@
 
 $(BUILD)/%.o: $(SOURCES)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -Ivendor -c $< -o $@
 
 $(OUTPUT).elf: $(OFILES)
 	$(CC) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o $@
