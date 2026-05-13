@@ -107,5 +107,8 @@ void filebrowser_go_up(FileBrowser* fb) {
 }
 
 BrowserEntry* filebrowser_selected(FileBrowser* fb) {
-    if (fb->count == 0) return NULL;
-    return
+    if (fb->count == 0)
+        return NULL;
+
+    return &fb->entries[fb->selected];
+}
