@@ -32,15 +32,15 @@ int main(void) {
     bool ndsp_ok = R_SUCCEEDED(ndsp_result);
 
     if (!ndsp_ok) {
-        printf("\x1b[31mAudio init failed! (0x%08lX)\x1b[0m\n", ndsp_result);
-        printf("\nTo fix this:\n");
-        printf("1. Hold SELECT while booting\n");
-        printf("2. Go to Rosalina menu\n");
-        printf("3. Select 'Miscellaneous options'\n");
-        printf("4. Select 'Dump DSP firmware'\n");
-        printf("5. Restart this app\n\n");
-        printf("Press START to exit or\n");
-        printf("A to continue without audio.\n");
+        printf("\x1b[31mAudio init failed!\x1b[0m\n");
+        printf("Error: 0x%08lX\n\n", ndsp_result);
+        printf("To fix:\n");
+        printf("1. Hold SELECT on boot\n");
+        printf("2. Rosalina menu\n");
+        printf("3. Miscellaneous options\n");
+        printf("4. Dump DSP firmware\n");
+        printf("5. Restart app\n\n");
+        printf("START=exit  A=continue\n");
 
         while (aptMainLoop()) {
             gfxSwapBuffers();
@@ -79,8 +79,8 @@ int main(void) {
             if (kDown & KEY_A) {
                 BrowserEntry* entry = filebrowser_selected(&fb);
                 if (entry) {
-                    if (entry->is_dir)       filebrowser_enter(&fb);
-                    else if (ndsp_ok)        audio_play(&audio, entry->full_path);
+                    if (entry->is_dir)  filebrowser_enter(&fb);
+                    else if (ndsp_ok)   audio_play(&audio, entry->full_path);
                 }
             }
 
@@ -114,7 +114,7 @@ int main(void) {
 
     if (ndsp_ok) ndspExit();
     cfguExit();
-    romfsExit();
+    romfsInit();
     gfxExit();
     return 0;
 
