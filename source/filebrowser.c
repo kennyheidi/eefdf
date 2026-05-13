@@ -37,9 +37,7 @@ void filebrowser_load(FileBrowser* fb) {
         if (ent->d_name[0] == '.') continue; // skip hidden / . / ..
 
         char path[MAX_PATH];
-        // ensure null-termination and avoid truncation warnings
         snprintf(path, sizeof(path), "%s/%s", fb->cwd, ent->d_name);
-        path[sizeof(path) - 1] = '\0';
 
         struct stat st;
         if (stat(path, &st) != 0) continue;
@@ -48,13 +46,8 @@ void filebrowser_load(FileBrowser* fb) {
         if (!is_dir && !is_audio(ent->d_name)) continue;
 
         BrowserEntry* e = &fb->entries[fb->count++];
-
-        strncpy(e->name, ent->d_name, sizeof(e->name) - 1);
-        e->name[sizeof(e->name) - 1] = '\0';
-
-        strncpy(e->full_path, path, sizeof(e->full_path) - 1);
-        e->full_path[sizeof(e->full_path) - 1] = '\0';
-
+        strncpy(e->name,      ent->d_name, sizeof(e->name) - 1);
+        strncpy(e->full_path, path,        sizeof(e->full_path) - 1);
         e->is_dir = is_dir;
         e->size   = is_dir ? 0 : st.st_size;
     }
@@ -65,7 +58,6 @@ void filebrowser_load(FileBrowser* fb) {
 
 void filebrowser_init(FileBrowser* fb, const char* start_path) {
     strncpy(fb->cwd, start_path, sizeof(fb->cwd) - 1);
-    fb->cwd[sizeof(fb->cwd) - 1] = '\0';
     filebrowser_load(fb);
 }
 
@@ -89,7 +81,6 @@ void filebrowser_enter(FileBrowser* fb) {
     BrowserEntry* e = filebrowser_selected(fb);
     if (e && e->is_dir) {
         strncpy(fb->cwd, e->full_path, sizeof(fb->cwd) - 1);
-        fb->cwd[sizeof(fb->cwd) - 1] = '\0';
         filebrowser_load(fb);
     }
 }
@@ -101,14 +92,11 @@ void filebrowser_go_up(FileBrowser* fb) {
         *slash = '\0';
     } else {
         strncpy(fb->cwd, "sdmc:/", sizeof(fb->cwd) - 1);
-        fb->cwd[sizeof(fb->cwd) - 1] = '\0';
     }
     filebrowser_load(fb);
 }
 
 BrowserEntry* filebrowser_selected(FileBrowser* fb) {
-    if (fb->count == 0)
-        return NULL;
-
+    if (fb->count == 0) return NULL;
     return &fb->entries[fb->selected];
 }
