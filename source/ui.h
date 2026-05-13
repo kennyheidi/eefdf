@@ -16,8 +16,13 @@
 #define WAVE_BARS 100   /* was 200 */
 
 typedef struct {
-    AudioState*  audio;
-    FileBrowser* fb;
+    int show_frames;  /* countdown: > 0 means easter egg is displayed */
+} EasterEggState;
+
+typedef struct {
+    AudioState*      audio;
+    FileBrowser*     fb;
+    EasterEggState*  easter_egg;
 
     /* Pre-allocated text buffer — reused every frame instead of alloc per call */
     C2D_TextBuf  shared_buf;
@@ -35,8 +40,9 @@ typedef struct {
     u32          col_bar;
 } UIState;
 
-void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb);
+void ui_init(UIState* ui, AudioState* audio, FileBrowser* fb, EasterEggState* easter_egg);
 void ui_draw_top(UIState* ui, C3D_RenderTarget* target);
 void ui_draw_bottom(UIState* ui, C3D_RenderTarget* target);
+void ui_draw_easter_egg(C3D_RenderTarget* target, EasterEggState* easter_egg);
 /* Call when shutting down to free the TextBuf */
 void ui_fini(UIState* ui);
