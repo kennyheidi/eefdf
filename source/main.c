@@ -119,12 +119,20 @@ int main(void) {
         bool do_exit = false;
 
         while (aptMainLoop()) {
-            hidScanInput();
-            u32 k = hidKeysDown();
-            if (k & KEY_START) { do_exit = true; break; }
-            if (k & KEY_A)     break;
-            draw_ndsp_error(top, bottom, tbuf);
-        }
+    hidScanInput();
+    u32 kDown = hidKeysDown();
+    u32 kHeld = hidKeysHeld();
+
+    // handle input (filebrowser, UI, etc.)
+
+    audio_update(&audio);   // <-- keep this every frame
+
+    // draw UI / screen
+
+    gfxFlushBuffers();
+    gfxSwapBuffers();
+    gspWaitForVBlank();
+}
 
         C2D_TextBufDelete(tbuf);
         if (do_exit) goto cleanup_early;
