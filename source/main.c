@@ -38,7 +38,7 @@ u32 __stacksize__ = 0x80000; /* 512 KB */
 /* ------------------------------------------------------------------ */
 
 static void draw_ndsp_error(C3D_RenderTarget* top, C3D_RenderTarget* bottom,
-                             C2D_TextBuf tbuf) {
+                            C2D_TextBuf tbuf) {
     static const struct { const char* str; float y; u32 col; } lines[] = {
         { "Audio init failed!",           30,  0xFF4444FFu },
         { "DSP firmware not found.",      54,  0xEEEEFFFFu },
@@ -59,7 +59,7 @@ static void draw_ndsp_error(C3D_RenderTarget* top, C3D_RenderTarget* bottom,
     C2D_SceneBegin(top);
     C2D_TextBufClear(tbuf);
 
-    for (int i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++) {
+    for (int i = 0; i < (int)(sizeof(lines) / sizeof(lines[0])); i++) {
         if (!lines[i].str[0]) continue;
         C2D_Text t;
         C2D_TextParse(&t, tbuf, lines[i].str);
@@ -75,7 +75,7 @@ static void draw_ndsp_error(C3D_RenderTarget* top, C3D_RenderTarget* bottom,
 }
 
 /* ------------------------------------------------------------------ */
-/*  Entry point                                                         */
+/*  Entry point                                                       */
 /* ------------------------------------------------------------------ */
 
 int main(void) {
@@ -119,20 +119,20 @@ int main(void) {
         bool do_exit = false;
 
         while (aptMainLoop()) {
-    hidScanInput();
-    u32 kDown = hidKeysDown();
-    u32 kHeld = hidKeysHeld();
+            hidScanInput();
+            u32 kDown = hidKeysDown();
 
-    // handle input (filebrowser, UI, etc.)
+            if (kDown & KEY_START) {
+                do_exit = true;
+                break;
+            }
+            if (kDown & KEY_A) {
+                break;
+            }
 
-    audio_update(&audio);   // <-- keep this every frame
-
-    // draw UI / screen
-
-    gfxFlushBuffers();
-    gfxSwapBuffers();
-    gspWaitForVBlank();
-}
+            draw_ndsp_error(top, bottom, tbuf);
+            gspWaitForVBlank();
+        }
 
         C2D_TextBufDelete(tbuf);
         if (do_exit) goto cleanup_early;
@@ -145,7 +145,7 @@ int main(void) {
 
         audio_init(&audio);
         filebrowser_init(&fb, "sdmc:/music");
-        ui_init(&ui, &audio, &fb, &easter_egg);
+        ui_init(&ui, &audio, &fb, NULL);  // Easter egg removed
 
         while (aptMainLoop()) {
             hidScanInput();
@@ -159,13 +159,22 @@ int main(void) {
             if (kDown & KEY_A) {
                 BrowserEntry* entry = filebrowser_selected(&fb);
                 if (entry) {
-                    if (entry->is_dir)  filebrowser_enter(&fb);
-                    else if (ndsp_ok) {     audio_open(&audio, entry->full_path);     audio_play(&audio); }
+                    if (entry->is_dir) {
+                        filebrowser_enter(&fb);
+                    } else if (ndsp_ok) {
+                        audio_open(&audio, entry->full_path);
+                        audio_play(&audio);
+                    }
                 }
             }
 
             if (kDown & KEY_START)  audio_stop(&audio);
-            if (kDown & KEY_SELECT) {     if (audio_is_playing(&audio))         audio_pause(&audio);     else         audio_resume(&audio); }
+            if (kDown & KEY_SELECT) {
+                if (audio_is_playing(&audio))
+                    audio_pause(&audio);
+                else
+                    audio_resume(&audio);
+            }
             if (kDown & KEY_X)      audio_reset_fx(&audio);
 
             float speed_step = (kHeld & (KEY_L | KEY_R)) ? 0.1f : 0.05f;
@@ -186,7 +195,7 @@ int main(void) {
             C3D_FrameEnd(0);
         }
 
-        audio_shutdown(&audio);
+        audio_exit(&audio);
         ui_fini(&ui);
         filebrowser_free(&fb);
     }
