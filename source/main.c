@@ -184,6 +184,7 @@ int main(void) {
 
     // Cleanup
     audio_shutdown(&audio);
+        ui_free(&ui);
     filebrowser_free(&fb);
     C2D_Fini();
     C3D_Fini();
