@@ -1,4 +1,3 @@
-cat > /tmp/eefdf-old3ds/source/main.c << 'EOF'
 /*
  * 3DS Audio Player with Pitch & Speed Control
  * Supports: MP3, OGG, FLAC, WAV
@@ -193,4 +192,3 @@ cleanup_early:
     gfxExit();
     return 0;
 }
-EOF
