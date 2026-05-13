@@ -1,15 +1,6 @@
 /*
  * 3DS Audio Player with Pitch & Speed Control
  * Supports: MP3, OGG, FLAC, WAV
- * Controls:
- *   D-Pad Up/Down    - Navigate file browser
- *   A                - Select file / Play
- *   B                - Go up a directory
- *   Left/Right       - Adjust speed (0.25x - 4.0x)
- *   L/R              - Adjust pitch (-12 to +12 semitones)
- *   Start            - Stop playback
- *   Select           - Toggle pause/resume
- *   X                - Reset pitch and speed
  */
 
 #include <3ds.h>
@@ -25,95 +16,114 @@
 #include "ui.h"
 
 int main(void) {
-    // Init services
     gfxInitDefault();
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
     C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
     C2D_Prepare();
-    consoleInit(GFX_BOTTOM, NULL);
+
+    PrintConsole console;
+    consoleInit(GFX_BOTTOM, &console);
 
     romfsInit();
-    ndspInit();
     cfguInit();
 
-    // Init subsystems
-    AudioState audio;
-    FileBrowser fb;
-    UIState ui;
+    printf("Initializing audio...\n");
+    Result ndsp_result = ndspInit();
+    bool ndsp_ok = R_SUCCEEDED(ndsp_result);
 
-    audio_init(&audio);
-    filebrowser_init(&fb, "sdmc:/music");
-    ui_init(&ui, &audio, &fb);
+    if (!ndsp_ok) {
+        printf("\x1b[31mAudio init failed! (0x%08lX)\x1b[0m\n", ndsp_result);
+        printf("\nTo fix this:\n");
+        printf("1. Hold SELECT while booting\n");
+        printf("2. Go to Rosalina menu\n");
+        printf("3. Select 'Miscellaneous options'\n");
+        printf("4. Select 'Dump DSP firmware'\n");
+        printf("5. Restart this app\n\n");
+        printf("Press START to exit or\n");
+        printf("A to continue without audio.\n");
 
-    // Render targets
-    C3D_RenderTarget* top    = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
-    C3D_RenderTarget* bottom = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
-
-    while (aptMainLoop()) {
-        hidScanInput();
-        u32 kDown = hidKeysDown();
-        u32 kHeld = hidKeysHeld();
-
-        // --- Input handling ---
-
-        // File browser navigation
-        if (kDown & KEY_DUP)   filebrowser_move(&fb, -1);
-        if (kDown & KEY_DDOWN) filebrowser_move(&fb,  1);
-        if (kDown & KEY_B)     filebrowser_go_up(&fb);
-
-        if (kDown & KEY_A) {
-            BrowserEntry* entry = filebrowser_selected(&fb);
-            if (entry) {
-                if (entry->is_dir) {
-                    filebrowser_enter(&fb);
-                } else {
-                    audio_play(&audio, entry->full_path);
-                }
-            }
+        while (aptMainLoop()) {
+            gfxSwapBuffers();
+            gfxFlushBuffers();
+            hidScanInput();
+            u32 k = hidKeysDown();
+            if (k & KEY_START) goto cleanup_early;
+            if (k & KEY_A)     break;
         }
-
-        // Playback control
-        if (kDown & KEY_START)  audio_stop(&audio);
-        if (kDown & KEY_SELECT) audio_toggle_pause(&audio);
-        if (kDown & KEY_X)      audio_reset_fx(&audio);
-
-        // Speed control (Left/Right, held = faster change)
-        float speed_step = (kHeld & (KEY_L | KEY_R)) ? 0.1f : 0.05f;
-        if (kDown & KEY_DLEFT)  audio_adjust_speed(&audio, -speed_step);
-        if (kDown & KEY_DRIGHT) audio_adjust_speed(&audio,  speed_step);
-
-        // Pitch control (L/R buttons)
-        if (kDown & KEY_L) audio_adjust_pitch(&audio, -1.0f);
-        if (kDown & KEY_R) audio_adjust_pitch(&audio,  1.0f);
-
-        // Update audio engine (processes pitch/speed changes)
-        audio_update(&audio);
-
-        // --- Rendering ---
-        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-
-        // Top screen: Now Playing + visualizer
-        C2D_TargetClear(top, C2D_Color32(0x12, 0x12, 0x1E, 0xFF));
-        C2D_SceneBegin(top);
-        ui_draw_top(&ui, top);
-
-        // Bottom screen: File browser
-        C2D_TargetClear(bottom, C2D_Color32(0x0E, 0x0E, 0x18, 0xFF));
-        C2D_SceneBegin(bottom);
-        ui_draw_bottom(&ui, bottom);
-
-        C3D_FrameEnd(0);
+    } else {
+        printf("Audio OK!\n");
     }
 
-    // Cleanup
-    audio_shutdown(&audio);
-    filebrowser_free(&fb);
-    C2D_Fini();
-    C3D_Fini();
-    ndspExit();
+    {
+        AudioState audio;
+        FileBrowser fb;
+        UIState ui;
+
+        audio_init(&audio);
+        audio.ndsp_available = ndsp_ok;
+        filebrowser_init(&fb, "sdmc:/music");
+        ui_init(&ui, &audio, &fb);
+
+        C3D_RenderTarget* top    = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
+        C3D_RenderTarget* bottom = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
+
+        while (aptMainLoop()) {
+            hidScanInput();
+            u32 kDown = hidKeysDown();
+            u32 kHeld = hidKeysHeld();
+
+            if (kDown & KEY_DUP)   filebrowser_move(&fb, -1);
+            if (kDown & KEY_DDOWN) filebrowser_move(&fb,  1);
+            if (kDown & KEY_B)     filebrowser_go_up(&fb);
+
+            if (kDown & KEY_A) {
+                BrowserEntry* entry = filebrowser_selected(&fb);
+                if (entry) {
+                    if (entry->is_dir)       filebrowser_enter(&fb);
+                    else if (ndsp_ok)        audio_play(&audio, entry->full_path);
+                }
+            }
+
+            if (kDown & KEY_START)  audio_stop(&audio);
+            if (kDown & KEY_SELECT) audio_toggle_pause(&audio);
+            if (kDown & KEY_X)      audio_reset_fx(&audio);
+
+            float speed_step = (kHeld & (KEY_L | KEY_R)) ? 0.1f : 0.05f;
+            if (kDown & KEY_DLEFT)  audio_adjust_speed(&audio, -speed_step);
+            if (kDown & KEY_DRIGHT) audio_adjust_speed(&audio,  speed_step);
+            if (kDown & KEY_L)      audio_adjust_pitch(&audio, -1.0f);
+            if (kDown & KEY_R)      audio_adjust_pitch(&audio,  1.0f);
+
+            if (ndsp_ok) audio_update(&audio);
+
+            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+            C2D_TargetClear(top,    C2D_Color32(0x12, 0x12, 0x1E, 0xFF));
+            C2D_SceneBegin(top);
+            ui_draw_top(&ui, top);
+            C2D_TargetClear(bottom, C2D_Color32(0x0E, 0x0E, 0x18, 0xFF));
+            C2D_SceneBegin(bottom);
+            ui_draw_bottom(&ui, bottom);
+            C3D_FrameEnd(0);
+        }
+
+        audio_shutdown(&audio);
+        filebrowser_free(&fb);
+        C2D_Fini();
+        C3D_Fini();
+    }
+
+    if (ndsp_ok) ndspExit();
     cfguExit();
     romfsExit();
     gfxExit();
+    return 0;
 
+cleanup_early:
+    if (ndsp_ok) ndspExit();
+    cfguExit();
+    romfsExit();
+    C2D_Fini();
+    C3D_Fini();
+    gfxExit();
     return 0;
 }
