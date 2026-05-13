@@ -1,6 +1,6 @@
 #---------------------------------------------------------------------------------
 # 3DS Audio Player — Makefile
-# Requires devkitARM + libctru + citro2d
+# Compatible with Old 3DS (O3DS) and New 3DS
 #---------------------------------------------------------------------------------
 
 APP_TITLE    := 3DS Audio Player
@@ -13,12 +13,11 @@ BUILD        := build
 SOURCES      := source
 ROMFS        := romfs
 
-# devkitPro toolchain
 ifeq ($(strip $(DEVKITPRO)),)
-  $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path>")
+  $(error "Please set DEVKITPRO in your environment.")
 endif
 ifeq ($(strip $(DEVKITARM)),)
-  $(error "Please set DEVKITARM in your environment. export DEVKITARM=<path>")
+  $(error "Please set DEVKITARM in your environment.")
 endif
 
 CTRULIB      := $(DEVKITPRO)/libctru
@@ -26,40 +25,43 @@ CTRULIB      := $(DEVKITPRO)/libctru
 include $(DEVKITARM)/3ds_rules
 
 #---------------------------------------------------------------------------------
-# Includes and libs — defined BEFORE CFLAGS so they expand correctly
+# Memory layout — SYSTEM mode gives O3DS apps the full 64MB
+# Without this, the default heap is tiny and C3D/C2D blow the stack
 #---------------------------------------------------------------------------------
+APP_MEMTYPE  := 0   # 0 = APPLICATION (standard, ~48MB usable on O3DS)
+
+#---------------------------------------------------------------------------------
+# Linker flags — explicit stack size to avoid overflow on O3DS
+# Default stack is 32KB; we set 64KB to be safe
+#---------------------------------------------------------------------------------
+ARCH     := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
+
 INCLUDE  := -I$(SOURCES) \
-            -Ivendor \
             -I$(CTRULIB)/include \
             -I$(DEVKITPRO)/portlibs/3ds/include
 
 LIBDIRS  := $(CTRULIB) $(DEVKITPRO)/portlibs/3ds
 LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-#---------------------------------------------------------------------------------
-# Compiler flags
-#---------------------------------------------------------------------------------
-ARCH     := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS   := -g -Wall -O2 -mword-relocations -ffunction-sections \
-            $(ARCH) $(INCLUDE) -D__3DS__
+            $(ARCH) $(INCLUDE) -DARM11 -D_3DS
 CXXFLAGS := $(CFLAGS) -std=c++17
 ASFLAGS  := -g $(ARCH)
-LDFLAGS  := -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+
+# -Wl,--stack sets the stack size. 0x10000 = 64KB, safe for O3DS.
+LDFLAGS  := -specs=3dsx.specs -g $(ARCH) \
+            -Wl,-Map,$(notdir $*.map) \
+            -Wl,--stack,0x10000
 
 LIBS     := -lcitro2d -lcitro3d -lctru -lm
 
 #---------------------------------------------------------------------------------
-# Source files — stb_vorbis.c lives in vendor/ so the wildcard never touches it;
-# audio.c #includes it directly via -Ivendor.
+# Source files
 #---------------------------------------------------------------------------------
 CFILES   := $(wildcard $(SOURCES)/*.c)
 OFILES   := $(patsubst $(SOURCES)/%.c, $(BUILD)/%.o, $(CFILES))
-
 OUTPUT   := $(CURDIR)/$(TARGET)
 
-#---------------------------------------------------------------------------------
-# Targets
-#---------------------------------------------------------------------------------
 .PHONY: all clean
 
 all: $(BUILD) $(OUTPUT).3dsx
